@@ -394,32 +394,47 @@ async function renderMapPng(points, pngPath, safeKey, labels, io) {
   await response.arrayBuffer();
   stage = 'local_file';
   const htmlPath = path.join(path.dirname(pngPath), `${safeKey}.html`);
-  await fs.writeFile(htmlPath, mapHtml(points, fit, labels), { mode: 0o600 });
-  await fs.rm(pngPath, { force: true });
-  try {
-    stage = 'browser_render';
-    const chromeArgs = [
-      "--headless=new",
-      `--user-data-dir=${CHROME_PROFILE_DIR}`,
-      "--disable-gpu", "--hide-scrollbars", "--no-first-run",
-      "--force-device-scale-factor=1", `--window-size=${WIDTH},${HEIGHT}`,
-      "--virtual-time-budget=8000", `--screenshot=${pngPath}`,
-      pathToFileURL(htmlPath).href
-    ];
-    // Chromium refuses to run its sandbox as root, which is the norm inside
-    // containers; opt out only there so macOS desktop usage stays untouched.
-    // --disable-dev-shm-usage keeps rendering out of the 64MB /dev/shm that
-    // containers default to, which silently kills the renderer mid-map.
-    if (typeof process.getuid === "function" && process.getuid() === 0) {
-      chromeArgs.splice(1, 0, "--no-sandbox", "--disable-dev-shm-usage");
-    }
-    await io.runFile(config.chromeCli, chromeArgs, { timeout: 30_000 });
-  } finally {
-    await fs.rm(htmlPath, { force: true });
+  const chromeArgs = [
+    "--headless=new",
+    `--user-data-dir=${CHROME_PROFILE_DIR}`,
+    "--disable-gpu", "--hide-scrollbars", "--no-first-run",
+    "--force-device-scale-factor=1", `--window-size=${WIDTH},${HEIGHT}`,
+    "--virtual-time-budget=8000", `--screenshot=${pngPath}`,
+    pathToFileURL(htmlPath).href
+  ];
+  // Chromium refuses to run its sandbox as root, which is the norm inside
+  // containers; opt out only there so macOS desktop usage stays untouched.
+  // --disable-dev-shm-usage keeps rendering out of the 64MB /dev/shm that
+  // containers default to, which silently kills the renderer mid-map.
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    chromeArgs.splice(1, 0, "--no-sandbox", "--disable-dev-shm-usage");
   }
-  stage = 'image_check';
-  const stats = await fs.stat(pngPath);
-  if (stats.size < 10_000) throw new Error("rendered map image is unexpectedly small");
+  // Headless Chrome occasionally exits 0 without writing the screenshot at
+  // all (yielding to default-profile state). The run after it succeeds, so
+  // retry — but only that signature; timeouts mean a genuinely stuck render.
+  const fileExists = () => fs.stat(pngPath).then(() => true, () => false);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await fs.writeFile(htmlPath, mapHtml(points, fit, labels), { mode: 0o600 });
+    await fs.rm(pngPath, { force: true });
+    try {
+      stage = attempt === 1 ? 'browser_render' : 'browser_render_retry';
+      await io.runFile(config.chromeCli, chromeArgs, { timeout: 30_000 });
+      stage = 'image_check';
+      if (await fileExists()) {
+        const stats = await fs.stat(pngPath);
+        if (stats.size >= 10_000) break;
+      }
+      if (attempt === 3) throw new Error("rendered map image missing or unexpectedly small");
+    } catch (error) {
+      if (error?.killed || attempt === 3) {
+        error.code = error?.killed ? 'RENDER_TIMEOUT' : safeErrorCode(error);
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10_000));
+    } finally {
+      await fs.rm(htmlPath, { force: true });
+    }
+  }
   } catch (cause) {
     const error = new Error('Basemap unavailable');
     error.stage = stage;
