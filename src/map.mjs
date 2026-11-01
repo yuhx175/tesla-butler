@@ -307,12 +307,20 @@ async function renderMapPng(points, pngPath, safeKey, labels, io) {
   await fs.rm(pngPath, { force: true });
   try {
     stage = 'browser_render';
-    await io.runFile(config.chromeCli, [
+    const chromeArgs = [
       "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
       "--force-device-scale-factor=1", `--window-size=${WIDTH},${HEIGHT}`,
       "--virtual-time-budget=8000", `--screenshot=${pngPath}`,
       pathToFileURL(htmlPath).href
-    ], { timeout: 30_000 });
+    ];
+    // Chromium refuses to run its sandbox as root, which is the norm inside
+    // containers; opt out only there so macOS desktop usage stays untouched.
+    // --disable-dev-shm-usage keeps rendering out of the 64MB /dev/shm that
+    // containers default to, which silently kills the renderer mid-map.
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      chromeArgs.splice(1, 0, "--no-sandbox", "--disable-dev-shm-usage");
+    }
+    await io.runFile(config.chromeCli, chromeArgs, { timeout: 30_000 });
   } finally {
     await fs.rm(htmlPath, { force: true });
   }
