@@ -337,9 +337,54 @@ async function writeFallbackPng(route, pngPath) {
   await fs.writeFile(pngPath, encodeRgbPng(WIDTH, HEIGHT, pixels), { mode: 0o600 });
 }
 
+let chromeProfileWarmPromise = null;
+// Chromium's first run with a fresh --user-data-dir initializes the profile
+// while --virtual-time-budget is already ticking, which races tile loading
+// and can end the render before the screenshot is written. Warm the profile
+// once with a tile-fetching page so real renders start from a hot cache.
+function ensureChromeProfileWarmed() {
+  if (!chromeProfileWarmPromise) {
+    chromeProfileWarmPromise = (async () => {
+      await fs.mkdir(CHROME_PROFILE_DIR, { recursive: true });
+      const warmHtml = path.join(CHROME_PROFILE_DIR, "warmup.html");
+      const warmPng = path.join(CHROME_PROFILE_DIR, "warmup.png");
+      await fs.writeFile(warmHtml, `<html><body style="margin:0"><img src="${tileUrl(1342, 670, 11)}"></body></html>`, { mode: 0o600 });
+      try {
+        const args = [
+          "--headless=new", `--user-data-dir=${CHROME_PROFILE_DIR}`,
+          "--disable-gpu", "--hide-scrollbars", "--no-first-run",
+          "--window-size=256,256", "--screenshot=" + warmPng,
+          pathToFileURL(warmHtml).href
+        ];
+        if (typeof process.getuid === "function" && process.getuid() === 0) {
+          args.splice(1, 0, "--no-sandbox", "--disable-dev-shm-usage");
+        }
+        // The very first run on a brand-new profile can itself exit 0 without
+        // writing anything; the profile only counts as warm once a screenshot
+        // has actually landed on disk.
+        const fileExists = () => fs.stat(warmPng).then(() => true, () => false);
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          await runFile(config.chromeCli, args, { timeout: 60_000 });
+          if (await fileExists()) break;
+          if (attempt === 3) throw new Error("chrome profile warmup did not produce a screenshot");
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+      } finally {
+        await fs.rm(warmHtml, { force: true });
+        await fs.rm(warmPng, { force: true });
+      }
+    })().catch((error) => {
+      chromeProfileWarmPromise = null;
+      throw error;
+    });
+  }
+  return chromeProfileWarmPromise;
+}
+
 async function renderMapPng(points, pngPath, safeKey, labels, io) {
   let stage = 'bounds';
   try {
+  await ensureChromeProfileWarmed();
   const fit = fitMap(points);
   const centerTileX = Math.floor((fit.originX + WIDTH / 2) / TILE_SIZE);
   const centerTileY = Math.floor((fit.originY + HEIGHT / 2) / TILE_SIZE);
