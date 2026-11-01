@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { pathToFileURL } from "node:url";
 import { config, projectPath } from "./config.mjs";
 import { runFile } from "./lib/process.mjs";
@@ -8,6 +10,9 @@ import { safeErrorCode } from './worker-runtime.mjs';
 const WIDTH = 1200;
 const HEIGHT = 560;
 const TILE_SIZE = 256;
+// Dedicated headless profile: never touches the machine's own Chrome profile,
+// and avoids process-singleton handoffs that silently skip the screenshot.
+const CHROME_PROFILE_DIR = path.join(os.tmpdir(), "tesla-butler-chrome-profile");
 const ENERGY_COLORS = Object.freeze({
   low: "#20A464",
   medium: "#F59E0B",
@@ -279,16 +284,57 @@ function drawFallback(pixels, route) {
   circle(pixels, points.at(-1).x, points.at(-1).y, 12, [255, 122, 69], 1);
 }
 
-async function writeFallbackPng(route, pngPath, safeKey) {
+const PNG_CRC_TABLE = (() => {
+  const table = new Int32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c;
+  }
+  return table;
+})();
+
+function pngCrc32(buffer) {
+  let crc = -1;
+  for (let i = 0; i < buffer.length; i += 1) crc = PNG_CRC_TABLE[(crc ^ buffer[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ -1) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(pngCrc32(body));
+  return Buffer.concat([length, body, crc]);
+}
+
+// Encode an RGB pixel buffer as PNG without external tools — the fallback
+// renderer used to shell out to /usr/bin/sips, which only exists on macOS.
+function encodeRgbPng(width, height, rgb) {
+  const stride = width * 3;
+  const raw = Buffer.alloc((stride + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    raw[y * (stride + 1)] = 0;
+    rgb.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlib.deflateSync(raw, { level: 6 })),
+    pngChunk("IEND", Buffer.alloc(0))
+  ]);
+}
+
+async function writeFallbackPng(route, pngPath) {
   const pixels = imageBuffer();
   drawFallback(pixels, route);
-  const ppmPath = path.join(path.dirname(pngPath), `${safeKey}.ppm`);
-  await fs.writeFile(ppmPath, Buffer.concat([Buffer.from(`P6\n${WIDTH} ${HEIGHT}\n255\n`, "ascii"), pixels]), { mode: 0o600 });
-  try {
-    await runFile("/usr/bin/sips", ["-s", "format", "png", ppmPath, "--out", pngPath], { timeout: 30_000 });
-  } finally {
-    await fs.rm(ppmPath, { force: true });
-  }
+  await fs.writeFile(pngPath, encodeRgbPng(WIDTH, HEIGHT, pixels), { mode: 0o600 });
 }
 
 async function renderMapPng(points, pngPath, safeKey, labels, io) {
@@ -308,7 +354,9 @@ async function renderMapPng(points, pngPath, safeKey, labels, io) {
   try {
     stage = 'browser_render';
     const chromeArgs = [
-      "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
+      "--headless=new",
+      `--user-data-dir=${CHROME_PROFILE_DIR}`,
+      "--disable-gpu", "--hide-scrollbars", "--no-first-run",
       "--force-device-scale-factor=1", `--window-size=${WIDTH},${HEIGHT}`,
       "--virtual-time-budget=8000", `--screenshot=${pngPath}`,
       pathToFileURL(htmlPath).href
@@ -353,10 +401,10 @@ export async function renderRoutePreview(route, key = "current", labels = {}, de
       const event = { status: 'failed', stage: error.stage || 'unknown', code: safeErrorCode(error) };
       if (io.log) io.log(event);
       else process.stdout.write(`[${new Date().toISOString()}] map_basemap status=failed stage=${event.stage} code=${event.code}\n`);
-      await writeFallbackPng(converted, pngPath, safeKey);
+      await writeFallbackPng(converted, pngPath);
       return { path: pngPath, hasRoute: true, hasBasemap: false, hasEnergyOverlay: true };
     }
   }
-  await writeFallbackPng(converted, pngPath, safeKey);
+  await writeFallbackPng(converted, pngPath);
   return { path: pngPath, hasRoute: false, hasBasemap: false, hasEnergyOverlay: false };
 }
