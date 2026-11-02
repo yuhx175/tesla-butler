@@ -362,7 +362,10 @@ function ensureChromeProfileWarmed() {
       await fs.mkdir(CHROME_PROFILE_DIR, { recursive: true });
       const warmHtml = path.join(CHROME_PROFILE_DIR, "warmup.html");
       const warmPng = path.join(CHROME_PROFILE_DIR, "warmup.png");
-      await fs.writeFile(warmHtml, `<html><body style="margin:0"><img src="${tileUrl(1342, 670, 11)}"></body></html>`, { mode: 0o600 });
+      // Warm the profile with a local-only page: profile initialization is
+      // what we need, and any network resource here could stall the load
+      // event indefinitely (tile servers throttle), hanging the render.
+      await fs.writeFile(warmHtml, "<html><body></body></html>", { mode: 0o600 });
       try {
         const args = [
           "--headless=new", `--user-data-dir=${CHROME_PROFILE_DIR}`,
@@ -414,7 +417,9 @@ async function renderMapPng(points, pngPath, safeKey, labels, io) {
     `--user-data-dir=${CHROME_PROFILE_DIR}`,
     "--disable-gpu", "--hide-scrollbars", "--no-first-run",
     "--force-device-scale-factor=1", `--window-size=${WIDTH},${HEIGHT}`,
-    "--virtual-time-budget=8000", `--screenshot=${pngPath}`,
+    // --timeout forces the screenshot even when a tile request stalls the
+    // page load event (the virtual-time budget alone waits for it forever).
+    "--virtual-time-budget=8000", "--timeout=45000", `--screenshot=${pngPath}`,
     pathToFileURL(htmlPath).href
   ];
   // Chromium refuses to run its sandbox as root, which is the norm inside
