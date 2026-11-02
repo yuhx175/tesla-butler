@@ -338,6 +338,17 @@ async function writeFallbackPng(route, pngPath) {
 }
 
 let chromeProfileWarmPromise = null;
+// A crashed run leaves SingletonLock/Socket/Cookie behind; in a container the
+// recorded PID is often recycled by an unrelated live process, so the next
+// headless launch believes another instance owns the profile and exits 0
+// without taking the screenshot. Clear the stale locks before every launch.
+async function clearChromeSingletonLocks() {
+  await Promise.all([
+    fs.rm(path.join(CHROME_PROFILE_DIR, "SingletonLock"), { force: true }),
+    fs.rm(path.join(CHROME_PROFILE_DIR, "SingletonSocket"), { force: true }),
+    fs.rm(path.join(CHROME_PROFILE_DIR, "SingletonCookie"), { force: true })
+  ]);
+}
 // Chromium's first run with a fresh --user-data-dir initializes the profile
 // while --virtual-time-budget is already ticking, which races tile loading
 // and can end the render before the screenshot is written. Warm the profile
@@ -364,6 +375,7 @@ function ensureChromeProfileWarmed() {
         // has actually landed on disk.
         const fileExists = () => fs.stat(warmPng).then(() => true, () => false);
         for (let attempt = 1; attempt <= 3; attempt += 1) {
+          await clearChromeSingletonLocks();
           await runFile(config.chromeCli, args, { timeout: 60_000 });
           if (await fileExists()) break;
           if (attempt === 3) throw new Error("chrome profile warmup did not produce a screenshot");
@@ -414,6 +426,7 @@ async function renderMapPng(points, pngPath, safeKey, labels, io) {
   // retry — but only that signature; timeouts mean a genuinely stuck render.
   const fileExists = () => fs.stat(pngPath).then(() => true, () => false);
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await clearChromeSingletonLocks();
     await fs.writeFile(htmlPath, mapHtml(points, fit, labels), { mode: 0o600 });
     await fs.rm(pngPath, { force: true });
     try {
