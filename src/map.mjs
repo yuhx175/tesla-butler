@@ -371,7 +371,7 @@ function ensureChromeProfileWarmed() {
           pathToFileURL(warmHtml).href
         ];
         if (typeof process.getuid === "function" && process.getuid() === 0) {
-          args.splice(1, 0, "--no-sandbox", "--disable-dev-shm-usage");
+          args.splice(1, 0, "--no-sandbox", "--disable-dev-shm-usage", "--single-process");
         }
         // The very first run on a brand-new profile can itself exit 0 without
         // writing anything; the profile only counts as warm once a screenshot
@@ -422,7 +422,7 @@ async function renderMapPng(points, pngPath, safeKey, labels, io) {
   // --disable-dev-shm-usage keeps rendering out of the 64MB /dev/shm that
   // containers default to, which silently kills the renderer mid-map.
   if (typeof process.getuid === "function" && process.getuid() === 0) {
-    chromeArgs.splice(1, 0, "--no-sandbox", "--disable-dev-shm-usage");
+    chromeArgs.splice(1, 0, "--no-sandbox", "--disable-dev-shm-usage", "--single-process");
   }
   // Headless Chrome occasionally exits 0 without writing the screenshot at
   // all (yielding to default-profile state). The run after it succeeds, so
