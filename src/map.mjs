@@ -147,7 +147,10 @@ function escapeHtml(value) {
 }
 
 function tileUrl(x, y, zoom) {
-  return `https://wprd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x=${x}&y=${y}&z=${zoom}`;
+  return config.mapTileUrl
+    .replace("{x}", x)
+    .replace("{y}", y)
+    .replace("{z}", zoom);
 }
 
 function tileElements(fit) {
