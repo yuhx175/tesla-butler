@@ -12,7 +12,10 @@ const HEIGHT = 560;
 const TILE_SIZE = 256;
 // Dedicated headless profile: never touches the machine's own Chrome profile,
 // and avoids process-singleton handoffs that silently skip the screenshot.
-const CHROME_PROFILE_DIR = path.join(os.tmpdir(), "tesla-butler-chrome-profile");
+// Override the location when the default temp dir sits on a slow disk (NAS
+// HDD under indexing load makes Chrome startup grind for minutes).
+const CHROME_PROFILE_DIR = process.env.TICKET_CHROME_PROFILE_DIR
+  || path.join(os.tmpdir(), "tesla-butler-chrome-profile");
 const ENERGY_COLORS = Object.freeze({
   low: "#20A464",
   medium: "#F59E0B",
