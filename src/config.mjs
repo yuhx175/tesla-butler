@@ -16,6 +16,8 @@ export const config = Object.freeze({
   ocrBackend: process.env.TICKET_OCR_BACKEND || "apple-vision",
   rapidOcrUrl: process.env.RAPIDOCR_URL || "http://127.0.0.1:9101",
   rapidOcrTimeoutMs: Number(process.env.RAPIDOCR_TIMEOUT_MS) || 30_000,
+  mapRenderUrl: process.env.TICKET_MAP_RENDER_URL || "",
+  mapRenderTimeoutMs: Number(process.env.TICKET_MAP_RENDER_TIMEOUT_MS) || 90_000,
   kimiBaseUrl: process.env.KIMI_BASE_URL || "http://127.0.0.1:10100/v1",
   kimiModel: process.env.KIMI_MODEL || "kimi/k3",
   kimiFallbackEnabled: process.env.KIMI_FALLBACK_ENABLED === undefined

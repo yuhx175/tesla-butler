@@ -434,7 +434,23 @@ async function renderMapPng(points, pngPath, safeKey, labels, io) {
     await fs.rm(pngPath, { force: true });
     try {
       stage = attempt === 1 ? 'browser_render' : 'browser_render_retry';
-      await io.runFile(config.chromeCli, chromeArgs, { timeout: 30_000 });
+      // When TICKET_MAP_RENDER_URL is set, delegate rendering to the map
+      // render sidecar (dedicated container — on busy low-memory hosts the
+      // in-worker Chrome instance gets starved and silently produces nothing).
+      if (config.mapRenderUrl) {
+        const response = await io.fetch(`${config.mapRenderUrl.replace(/\/$/, "")}/render`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ html: await fs.readFile(htmlPath, "utf8") }),
+          signal: AbortSignal.timeout(config.mapRenderTimeoutMs || 90_000)
+        });
+        if (!response.ok) throw new Error(`map render sidecar ${response.status}`);
+        const png = Buffer.from(await response.arrayBuffer());
+        if (png.length < 10_000) throw new Error("sidecar rendered map image is unexpectedly small");
+        await fs.writeFile(pngPath, png, { mode: 0o600 });
+      } else {
+        await io.runFile(config.chromeCli, chromeArgs, { timeout: 30_000 });
+      }
       stage = 'image_check';
       if (await fileExists()) {
         const stats = await fs.stat(pngPath);
