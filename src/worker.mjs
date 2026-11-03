@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createEventProcessor, createSerialQueue, safeErrorCode } from './worker-runtime.mjs';
 import { connect } from "mqtt";
 import { handleCardEvent, handleMessageEvent, retryPendingMapCards, sendChargingEvent, sendCompletedTrip, sendScheduledReport } from "./bot.mjs";
+import { backfillDriveAddresses } from "./amap-addr.mjs";
 import { ChargingTracker, parseTeslaMateTopic } from "./charging.mjs";
 import { createChargingDatabaseMonitor, deliverPendingChargingEvents } from "./charging-monitor.mjs";
 import { consumeLines } from "./lib/lines.mjs";
@@ -162,6 +163,11 @@ async function startTripMonitor() {
     getRuntimeState,
     saveState: saveTripMonitorState,
     sendTrip: async (chatId, event, key) => {
+      try {
+        await backfillDriveAddresses(event.trip?.segment_ids);
+      } catch (error) {
+        log(`address backfill failed (trip card continues): ${error.message}`);
+      }
       await sendCompletedTrip(chatId, event, key);
       log(`trip notification sent segments=${event.trip.segment_ids.length}`);
     }

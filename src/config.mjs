@@ -16,6 +16,7 @@ export const config = Object.freeze({
   ocrBackend: process.env.TICKET_OCR_BACKEND || "apple-vision",
   rapidOcrUrl: process.env.RAPIDOCR_URL || "http://127.0.0.1:9101",
   rapidOcrTimeoutMs: Number(process.env.RAPIDOCR_TIMEOUT_MS) || 30_000,
+  amapKey: process.env.AMAP_KEY || "",
   mapRenderUrl: process.env.TICKET_MAP_RENDER_URL || "",
   mapRenderTimeoutMs: Number(process.env.TICKET_MAP_RENDER_TIMEOUT_MS) || 90_000,
   mapTileUrl: process.env.TICKET_MAP_TILE_URL
