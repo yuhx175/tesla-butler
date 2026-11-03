@@ -377,7 +377,7 @@ function ensureChromeProfileWarmed() {
           pathToFileURL(warmHtml).href
         ];
         if (typeof process.getuid === "function" && process.getuid() === 0) {
-          args.splice(1, 0, "--no-sandbox", "--disable-dev-shm-usage", "--single-process");
+          args.splice(1, 0, "--no-sandbox", "--disable-dev-shm-usage");
         }
         // The very first run on a brand-new profile can itself exit 0 without
         // writing anything; the profile only counts as warm once a screenshot
@@ -405,7 +405,9 @@ function ensureChromeProfileWarmed() {
 async function renderMapPng(points, pngPath, safeKey, labels, io) {
   let stage = 'bounds';
   try {
-  await ensureChromeProfileWarmed();
+  // A dedicated render sidecar runs its own Chrome; warming a local profile
+  // would be pure overhead (and impossible if the host has no Chrome).
+  if (!config.mapRenderUrl) await ensureChromeProfileWarmed();
   const fit = fitMap(points);
   const centerTileX = Math.floor((fit.originX + WIDTH / 2) / TILE_SIZE);
   const centerTileY = Math.floor((fit.originY + HEIGHT / 2) / TILE_SIZE);
@@ -430,7 +432,7 @@ async function renderMapPng(points, pngPath, safeKey, labels, io) {
   // --disable-dev-shm-usage keeps rendering out of the 64MB /dev/shm that
   // containers default to, which silently kills the renderer mid-map.
   if (typeof process.getuid === "function" && process.getuid() === 0) {
-    chromeArgs.splice(1, 0, "--no-sandbox", "--disable-dev-shm-usage", "--single-process");
+    chromeArgs.splice(1, 0, "--no-sandbox", "--disable-dev-shm-usage");
   }
   // Headless Chrome occasionally exits 0 without writing the screenshot at
   // all (yielding to default-profile state). The run after it succeeds, so
