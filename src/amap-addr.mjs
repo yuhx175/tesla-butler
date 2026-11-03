@@ -88,8 +88,8 @@ export async function backfillDriveAddresses(driveIds = []) {
            round(sp.latitude::numeric, 6) || ',' || round(sp.longitude::numeric, 6) AS sll,
            round(ep.latitude::numeric, 6) || ',' || round(ep.longitude::numeric, 6) AS ell
     FROM drives d
-    JOIN positions sp ON sp.id = d.start_position_id
-    JOIN positions ep ON ep.id = d.end_position_id
+    LEFT JOIN positions sp ON sp.id = d.start_position_id
+    LEFT JOIN positions ep ON ep.id = d.end_position_id
     WHERE (d.start_address_id IS NULL OR d.end_address_id IS NULL) ${idFilter}
     ORDER BY d.id`);
   if (!rows) return 0;
@@ -103,6 +103,9 @@ export async function backfillDriveAddresses(driveIds = []) {
   let filled = 0;
   for (const drive of drives) {
     for (const [coord, column] of [[drive.sll, "start_address_id"], [drive.ell, "end_address_id"]]) {
+      // TeslaMate may not have written the end position yet right after
+      // parking; skip that endpoint (a later pass picks it up).
+      if (!coord || !coord.includes(",") || coord.startsWith("NULL")) continue;
       let addressId = addrCache.get(coord);
       if (addressId === undefined) {
         const [lat, lng] = coord.split(",").map(Number);

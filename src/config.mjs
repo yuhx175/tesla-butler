@@ -17,6 +17,7 @@ export const config = Object.freeze({
   rapidOcrUrl: process.env.RAPIDOCR_URL || "http://127.0.0.1:9101",
   rapidOcrTimeoutMs: Number(process.env.RAPIDOCR_TIMEOUT_MS) || 30_000,
   amapKey: process.env.AMAP_KEY || "",
+  tripMinKm: Number(process.env.TICKET_TRIP_MIN_KM ?? 1),
   mapRenderUrl: process.env.TICKET_MAP_RENDER_URL || "",
   mapRenderTimeoutMs: Number(process.env.TICKET_MAP_RENDER_TIMEOUT_MS) || 90_000,
   mapTileUrl: process.env.TICKET_MAP_TILE_URL

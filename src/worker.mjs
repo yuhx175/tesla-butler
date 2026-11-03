@@ -163,13 +163,28 @@ async function startTripMonitor() {
     getRuntimeState,
     saveState: saveTripMonitorState,
     sendTrip: async (chatId, event, key) => {
+      const segmentIds = event.trip?.segment_ids ?? event.segment_ids;
+      let trip = event.trip;
       try {
-        await backfillDriveAddresses(event.trip?.segment_ids);
+        // Micro-trips (e.g. re-parking after fetching something) stay in
+        // TeslaMate but do not deserve a chat notification.
+        if ((trip?.distance_km ?? Infinity) < config.tripMinKm) {
+          log(`trip skipped: ${trip?.distance_km}km below tripMinKm=${config.tripMinKm}`);
+          return;
+        }
+        // Drive close and address/position writes race each other; retry
+        // while the fresh query still lacks road names, then send anyway.
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 15_000));
+          await backfillDriveAddresses(segmentIds);
+          trip = await getDriveGroup(segmentIds) || trip;
+          if (trip?.start_road || trip?.end_road) break;
+        }
       } catch (error) {
         log(`address backfill failed (trip card continues): ${error.message}`);
       }
-      await sendCompletedTrip(chatId, event, key);
-      log(`trip notification sent segments=${event.trip.segment_ids.length}`);
+      await sendCompletedTrip(chatId, trip ? { ...event, trip } : event, key);
+      log(`trip notification sent segments=${segmentIds.length}`);
     }
   });
   checkTripDatabase = async () => {
@@ -266,6 +281,9 @@ async function boot() {
   startConsumer("card.action.trigger", handleCardEvent);
   await startTripMonitor().catch((error) => log(`trip monitor failed: ${error.message}`));
   await startChargingMonitor().catch((error) => log(`charging monitor failed: ${error.message}`));
+  if (config.amapKey) {
+    every(() => backfillDriveAddresses().catch((error) => log(`address backfill failed: ${error.message}`)), 5 * 60 * 1_000);
+  }
   const schedule = () => schedulerQueue.enqueue(checkScheduledPush, 'scheduled')
     .catch((error) => log(`scheduler failed code=${safeErrorCode(error)}`));
   schedule();
