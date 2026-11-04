@@ -33,16 +33,24 @@ async function db(sql) {
 }
 
 async function amapRegeo(lat, lng) {
-  const url = `https://restapi.amap.com/v3/geocode/regeo?key=${config.amapKey}&location=${lng},${lat}&radius=200&extensions=base`;
+  const url = `https://restapi.amap.com/v3/geocode/regeo?key=${config.amapKey}&location=${lng},${lat}&radius=200&extensions=all`;
   const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
   const payload = await response.json();
   if (String(payload.status) !== "1") throw new Error(`amap status ${payload.status}: ${payload.info}`);
   const component = payload.regeocode?.addressComponent || {};
+  // extensions=all 附带最近的实体道路列表（按距离排序）——AMap 的
+  // addressComponent.street 只是乡镇/街道办层级，不是路名。
+  let nearestRoad = null;
+  for (const road of Array.isArray(payload.regeocode?.roads) ? payload.regeocode.roads : []) {
+    const distance = Number(road.distance);
+    if (!Number.isFinite(distance) || distance > 400) continue;
+    if (!nearestRoad || distance < Number(nearestRoad.distance)) nearestRoad = road;
+  }
   const arrayOr = (value, fallback) => Array.isArray(value) ? fallback : (value || fallback);
   if (!payload.regeocode.formatted_address) return null;
   return {
     display_name: payload.regeocode.formatted_address,
-    road: component.street || component.township || null,
+    road: nearestRoad?.name || component.street || component.township || null,
     neighbourhood: component.township || null,
     city: arrayOr(component.city, component.province),
     county: arrayOr(component.district, null),

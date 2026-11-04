@@ -17,15 +17,21 @@ const DB = (sql) => run(DOCKER, ["exec", "tesla-saving-ticket-database-1", "psql
 
 async function amapRegeo(lat, lng) {
   const KEY = process.env.AMAP_KEY || "";
-  const url = `https://restapi.amap.com/v3/geocode/regeo?key=${KEY}&location=${lng},${lat}&radius=200&extensions=base`;
+  const url = `https://restapi.amap.com/v3/geocode/regeo?key=${KEY}&location=${lng},${lat}&radius=200&extensions=all`;
   const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
   const j = await r.json();
   if (String(j.status) !== "1") throw new Error("amap status " + j.status);
   const c = j.regeocode.addressComponent || {};
+  let nearestRoad = null;
+  for (const road of Array.isArray(j.regeocode.roads) ? j.regeocode.roads : []) {
+    const distance = Number(road.distance);
+    if (!Number.isFinite(distance) || distance > 400) continue;
+    if (!nearestRoad || distance < Number(nearestRoad.distance)) nearestRoad = road;
+  }
   if (!j.regeocode.formatted_address) return null;
   return {
     display: j.regeocode.formatted_address,
-    road: c.street || c.township || null,
+    road: nearestRoad?.name || c.street || c.township || null,
     neighbourhood: c.township || null,
     city: Array.isArray(c.city) ? (c.province || null) : (c.city || null),
     county: Array.isArray(c.district) ? null : (c.district || null),
