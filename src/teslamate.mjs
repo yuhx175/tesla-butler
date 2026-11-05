@@ -287,6 +287,8 @@ export async function getDriveMonitorSnapshot({ signal } = {}) {
             AND cp.start_date <= d.start_date
         ) AS charging_between
       FROM ordered d
+      LEFT JOIN geofences sgf ON sgf.id = d.start_geofence_id
+      LEFT JOIN geofences egf ON egf.id = d.end_geofence_id
       LEFT JOIN addresses sa ON sa.id = d.start_address_id
       LEFT JOIN addresses ea ON ea.id = d.end_address_id
       LEFT JOIN positions sp ON sp.id = d.start_position_id
@@ -416,7 +418,7 @@ export async function getDriveGroup(driveIds, options = {}) {
       SELECT
         d.id, d.car_id, d.start_date AS start_at, d.end_date AS end_at,
         round(d.distance::numeric, 2) AS distance_km, d.duration_min,
-        NULLIF(sa.road, '') AS start_road, NULLIF(ea.road, '') AS end_road,
+        COALESCE(sgf.name, NULLIF(sa.road, '')) AS start_road, COALESCE(egf.name, NULLIF(ea.road, '')) AS end_road,
         sp.latitude::float8 AS start_lat, sp.longitude::float8 AS start_lng,
         ep.latitude::float8 AS end_lat, ep.longitude::float8 AS end_lng,
         CASE
