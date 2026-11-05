@@ -117,10 +117,10 @@ export async function getLatestTrip() {
         'end_at', d.end_date,
         'distance_km', round(d.distance::numeric, 1),
         'duration_min', d.duration_min,
-        'start_road', NULLIF(sa.road, ''),
-        'end_road', NULLIF(ea.road, ''),
-        'start_area', NULLIF(sa.city, ''),
-        'end_area', NULLIF(ea.city, ''),
+        'start_road', COALESCE(sgf.name, NULLIF(sa.road, '')),
+        'end_road', COALESCE(egf.name, NULLIF(ea.road, '')),
+        'start_area', COALESCE(sgf.name, NULLIF(sa.city, '')),
+        'end_area', COALESCE(egf.name, NULLIF(ea.city, '')),
         'estimated_kwh', CASE
           WHEN e.valid_segments > 0 THEN round(greatest(e.net_kwh, 0)::numeric, 2)
           WHEN c.efficiency IS NOT NULL
@@ -142,6 +142,8 @@ export async function getLatestTrip() {
       )
       FROM drives d
       JOIN cars c ON c.id = d.car_id
+      LEFT JOIN geofences sgf ON sgf.id = d.start_geofence_id
+      LEFT JOIN geofences egf ON egf.id = d.end_geofence_id
       LEFT JOIN addresses sa ON sa.id = d.start_address_id
       LEFT JOIN addresses ea ON ea.id = d.end_address_id
       LEFT JOIN LATERAL (
@@ -274,7 +276,7 @@ export async function getDriveMonitorSnapshot({ signal } = {}) {
       SELECT
         d.id, d.car_id, d.start_date AS start_at, d.end_date AS end_at,
         round(d.distance::numeric, 2) AS distance_km, d.duration_min,
-        NULLIF(sa.road, '') AS start_road, NULLIF(ea.road, '') AS end_road,
+        COALESCE(sgf.name, NULLIF(sa.road, '')) AS start_road, COALESCE(egf.name, NULLIF(ea.road, '')) AS end_road,
         sp.latitude::float8 AS start_lat, sp.longitude::float8 AS start_lng,
         ep.latitude::float8 AS end_lat, ep.longitude::float8 AS end_lng,
         EXISTS (
@@ -437,6 +439,8 @@ export async function getDriveGroup(driveIds, options = {}) {
         END AS energy_source
       FROM drives d
       JOIN cars c ON c.id = d.car_id
+      LEFT JOIN geofences sgf ON sgf.id = d.start_geofence_id
+      LEFT JOIN geofences egf ON egf.id = d.end_geofence_id
       LEFT JOIN addresses sa ON sa.id = d.start_address_id
       LEFT JOIN addresses ea ON ea.id = d.end_address_id
       LEFT JOIN positions sp ON sp.id = d.start_position_id
