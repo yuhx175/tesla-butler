@@ -13,11 +13,14 @@
 // caller for display only. Coordinates are converted WGS-84 → GCJ-02
 // before hitting AMap. Failures never carry coordinates or addresses —
 // error messages use stable codes only.
+// A caller's signal bounds the work: once it is aborted no further
+// request is started and the one on the wire is dropped.
 
 import fs from "node:fs/promises";
 import path from "node:path";
 import { config, projectPath } from "./config.mjs";
 import { wgs84ToGcj02 } from "./map.mjs";
+import { abortableSleep } from "./query-runtime.mjs";
 
 const STORAGE_PATH = projectPath("data", "processed", "amap-addresses-v2.json");
 const RESOLVE_TIMEOUT_MS = 8_000;
@@ -30,9 +33,9 @@ const NON_VEHICULAR_PATH_RE = /(绿道|步道|绿廊|栈道|健身|跑道)/;
 
 const state = {
   cache: null,          // Map<coordKey, label|null>
-  cacheLoaded: false,
-  saving: false
+  cacheLoaded: false
 };
+let cacheWrite = Promise.resolve();
 
 function coordKey(lat, lng) {
   return `${Number(lat).toFixed(6)},${Number(lng).toFixed(6)}`;
@@ -57,26 +60,30 @@ async function loadCache() {
   return state.cache;
 }
 
-async function persistCache() {
-  if (state.saving) return;
-  state.saving = true;
-  queueMicrotask(() => { state.saving = false; });
-  try {
-    await fs.mkdir(path.dirname(STORAGE_PATH), { recursive: true, mode: 0o700 });
-    const payload = {};
-    for (const [key, value] of state.cache || new Map()) {
-      if (value) payload[key] = value;
-    }
-    await fs.writeFile(STORAGE_PATH, JSON.stringify(payload, null, 1), { mode: 0o600 });
-  } catch (cause) {
+function persistCache() {
+  // Writes are chained: concurrent endpoint resolutions must never interleave
+  // their writes to the same file. Each write snapshots the cache as it starts.
+  cacheWrite = cacheWrite.then(() => writeCache()).catch((cause) => {
     console.warn(`[${new Date().toISOString()}] amap address cache write failed code=${cause?.code || "UNKNOWN"}`);
-  }
+  });
 }
 
-async function amapRegeo(gcjLat, gcjLng) {
+async function writeCache() {
+  await fs.mkdir(path.dirname(STORAGE_PATH), { recursive: true, mode: 0o700 });
+  const payload = {};
+  for (const [key, value] of state.cache || new Map()) {
+    if (value) payload[key] = value;
+  }
+  await fs.writeFile(STORAGE_PATH, JSON.stringify(payload, null, 1), { mode: 0o600 });
+}
+
+async function amapRegeo(gcjLat, gcjLng, signal) {
   const location = `${gcjLng.toFixed(6)},${gcjLat.toFixed(6)}`; // AMap: lng first
   const url = `https://restapi.amap.com/v3/geocode/regeo?key=${config.amapKey}&location=${location}&radius=200&extensions=all`;
-  const response = await fetch(url, { signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS) });
+  // One lookup never takes longer than RESOLVE_TIMEOUT_MS; the caller's
+  // budget can end it sooner.
+  const timeout = AbortSignal.timeout(RESOLVE_TIMEOUT_MS);
+  const response = await fetch(url, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
   if (!response.ok) {
     const error = new Error(`amap http ${response.status}`);
     error.code = "AMAP_HTTP";
@@ -109,7 +116,7 @@ function extractLabel(regeocode) {
   };
 }
 
-async function resolveLabel(coordKeyString) {
+async function resolveLabel(coordKeyString, { signal } = {}) {
   const cache = await loadCache();
   const cached = cache.get(coordKeyString);
   if (cached !== undefined) return cached; // may be null (known-unresolvable)
@@ -119,9 +126,11 @@ async function resolveLabel(coordKeyString) {
   // Transient network/timeout failures were observed in production; retry
   // with backoff before giving up on a coordinate.
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 2_000 * (attempt - 1)));
+    // Out of budget: neither a backoff nor another request is started.
+    if (signal?.aborted) throw signal.reason;
+    if (attempt > 1) await abortableSleep(2_000 * (attempt - 1), signal);
     try {
-      const payload = await amapRegeo(gcj.lat, gcj.lng);
+      const payload = await amapRegeo(gcj.lat, gcj.lng, signal);
       const label = extractLabel(payload.regeocode || {});
       cache.set(coordKeyString, label);
       persistCache();
@@ -130,6 +139,7 @@ async function resolveLabel(coordKeyString) {
       lastError = cause;
     }
   }
+  if (signal?.aborted) throw signal.reason;
   const error = new Error(`amap resolve failed code=${lastError?.code || lastError?.name || "UNKNOWN"}`);
   error.code = "AMAP_RESOLVE_FAILED";
   throw error;
@@ -140,26 +150,35 @@ async function resolveLabel(coordKeyString) {
  * AMap resolver. Read-only towards TeslaMate — resolved labels live in the
  * returned trip object and this tool's own cache, never in TeslaMate
  * tables. Never throws; resolution problems surface as console warnings.
+ * An optional signal bounds the work: once it is aborted the labels that
+ * are still missing stay missing, so a caller can always send the card.
  */
-export async function applyAddressLabels(trip) {
+export async function applyAddressLabels(trip, { signal } = {}) {
   if (!config.addressBackfillEnabled || !config.amapKey || !trip) return trip;
   const endpoints = [
     { roadField: "start_road", areaField: "start_area", lat: trip.start_lat, lng: trip.start_lng },
     { roadField: "end_road", areaField: "end_area", lat: trip.end_lat, lng: trip.end_lng }
   ];
-  for (const endpoint of endpoints) {
-    if (trip[endpoint.roadField]) continue;
-    const lat = Number(endpoint.lat);
-    const lng = Number(endpoint.lng);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-    try {
-      const label = await resolveLabel(coordKey(lat, lng));
-      if (!label) continue;
-      if (!trip[endpoint.roadField] && label.road) trip[endpoint.roadField] = label.road;
-      if (!trip[endpoint.areaField] && label.area) trip[endpoint.areaField] = label.area;
-    } catch (cause) {
-      console.warn(`[${new Date().toISOString()}] address label resolve failed code=${cause.code || "UNKNOWN"}`);
-    }
-  }
+  // Both endpoints are looked up together under the same budget, so a slow
+  // one cannot use up the time the other still needs.
+  await Promise.all(endpoints.map((endpoint) => resolveEndpoint(trip, endpoint, signal)));
   return trip;
+}
+
+async function resolveEndpoint(trip, endpoint, signal) {
+  if (trip[endpoint.roadField]) return;
+  const lat = Number(endpoint.lat);
+  const lng = Number(endpoint.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+  try {
+    const label = await resolveLabel(coordKey(lat, lng), { signal });
+    if (!label) return;
+    if (!trip[endpoint.roadField] && label.road) trip[endpoint.roadField] = label.road;
+    if (!trip[endpoint.areaField] && label.area) trip[endpoint.areaField] = label.area;
+  } catch (cause) {
+    // A spent budget leaves this label to a later query; that is not a failure.
+    const outcome = signal?.aborted ? "aborted" : "failed";
+    const code = signal?.aborted ? (cause.name || "ABORTED") : (cause.code || "UNKNOWN");
+    console.warn(`[${new Date().toISOString()}] address label resolve ${outcome} code=${code}`);
+  }
 }

@@ -27,6 +27,17 @@ export function createQueryRunner({ run, log = () => {}, now = Date.now }) {
   };
 }
 
+// Resolves after ms, or rejects with the signal's reason as soon as the signal
+// is aborted — a wait must never outlive the deadline it is part of.
+export function abortableSleep(ms, signal) {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export async function withQueryDeadline(operation, timeoutMs, label) {
   const controller = new AbortController();
   let timer;

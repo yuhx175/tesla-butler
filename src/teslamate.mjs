@@ -412,7 +412,9 @@ export async function getTripInsightHistory(limit = 50) {
   `, 15_000);
 }
 
-export async function getDriveGroup(driveIds, options = {}) {
+// `options` drive the grouping (see groupDriveSegments); `signal` lets a
+// caller bound the query — aborting it stops the psql child process.
+export async function getDriveGroup(driveIds, options = {}, { signal } = {}) {
   const ids = driveIdsSql(driveIds);
   const segments = await sqlJson(`
     SELECT COALESCE(json_agg(row_to_json(x) ORDER BY x.start_at), '[]'::json)
@@ -462,7 +464,7 @@ export async function getDriveGroup(driveIds, options = {}) {
       ) e ON true
       WHERE d.id IN (${ids}) AND d.end_date IS NOT NULL
     ) x;
-  `);
+  `, 30_000, { signal });
   const expectedIds = ids.split(",").map(Number);
   if (segments.length !== expectedIds.length) throw new Error("one or more drive segments are unavailable");
   const groups = groupDriveSegments(segments, options);

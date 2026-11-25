@@ -4,6 +4,7 @@ import { createEventProcessor, createSerialQueue, safeErrorCode } from './worker
 import { connect } from "mqtt";
 import { handleCardEvent, handleMessageEvent, retryPendingMapCards, sendChargingEvent, sendCompletedTrip, sendScheduledReport } from "./bot.mjs";
 import { applyAddressLabels } from "./amap-addr.mjs";
+import { refreshTripForCard } from "./trip-refresh.mjs";
 import { ChargingTracker, parseTeslaMateTopic } from "./charging.mjs";
 import { createChargingDatabaseMonitor, deliverPendingChargingEvents } from "./charging-monitor.mjs";
 import { consumeLines } from "./lib/lines.mjs";
@@ -157,7 +158,7 @@ const tripGroupOptions = Object.freeze({
   pauseMs: tripBoundaryDefaults.inactivityTimeoutMs,
   endpointMeters: 100
 });
-const getTripGroup = (segmentIds) => getDriveGroup(segmentIds, tripGroupOptions);
+const getTripGroup = (segmentIds, { signal } = {}) => getDriveGroup(segmentIds, tripGroupOptions, { signal });
 
 async function startTripMonitor() {
   const state = await getRuntimeState();
@@ -178,20 +179,17 @@ async function startTripMonitor() {
           log(`trip skipped: ${trip?.distance_km}km below tripMinKm=${config.tripMinKm}`);
           return;
         }
-        // Drive close and address/position writes race each other. Re-query
-        // fresh and resolve missing road labels via AMap (read-only, stored
-        // in this tool's own cache) under an explicit time budget — the card
-        // always goes out when the budget is spent.
-        const deadline = Date.now() + 20_000;
-        for (let attempt = 1; attempt <= 3; attempt += 1) {
-          if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 15_000));
-          trip = await getTripGroup(segmentIds) || trip;
-          await applyAddressLabels(trip);
-          if (trip?.start_road || trip?.end_road) break;
-          if (Date.now() >= deadline) break;
-        }
+        // Drive close and address/position writes race each other, so re-query
+        // and resolve missing road labels via AMap (read-only, stored in this
+        // tool's own cache) — under a hard budget, so that neither a slow
+        // query nor a slow lookup can hold the card back.
+        trip = await refreshTripForCard({ segmentIds, trip }, {
+          getTrip: getTripGroup,
+          resolveLabels: applyAddressLabels,
+          log
+        });
       } catch (error) {
-        log(`address label resolve failed (trip card continues): ${error.message}`);
+        log(`trip refresh failed (trip card continues) code=${safeErrorCode(error)}`);
       }
       await sendCompletedTrip(chatId, trip ? { ...event, trip } : event, key);
       log(`trip notification sent segments=${segmentIds.length}`);
