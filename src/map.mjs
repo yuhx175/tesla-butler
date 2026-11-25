@@ -417,12 +417,16 @@ async function renderMapPng(points, pngPath, safeKey, labels, io) {
   let stage = 'bounds';
   try {
   // A dedicated render sidecar runs its own Chrome; warming a local profile
-  // would be pure overhead (and impossible if the host has no Chrome).
-  try {
-    await ensureChromeProfileWarmed(io);
-  } catch (error) {
-    // Warmup is an optimization only — rendering itself reports failures.
-    console.warn(`[${new Date().toISOString()}] chrome profile warmup skipped code=${error.code || "UNKNOWN"}`);
+  // would be pure overhead (and impossible if the host has no Chrome). Worse,
+  // a hung local Chrome would stall this render and every render queued
+  // behind it — so in sidecar mode the local one is never launched at all.
+  if (!config.mapRenderUrl) {
+    try {
+      await ensureChromeProfileWarmed(io);
+    } catch (error) {
+      // Warmup is an optimization only — rendering itself reports failures.
+      console.warn(`[${new Date().toISOString()}] chrome profile warmup skipped code=${error.code || "UNKNOWN"}`);
+    }
   }
   const fit = fitMap(points);
   const centerTileX = Math.floor((fit.originX + WIDTH / 2) / TILE_SIZE);
