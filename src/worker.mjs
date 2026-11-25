@@ -150,16 +150,22 @@ async function observeTripChargingEvents(events, observedAt) {
   ));
 }
 
+// The monitor merges drive segments with this tolerance. The re-query before
+// a trip card must group the same way, or a trip with a stop of up to 30
+// minutes comes back as several trips and is never refreshed.
+const tripGroupOptions = Object.freeze({
+  pauseMs: tripBoundaryDefaults.inactivityTimeoutMs,
+  endpointMeters: 100
+});
+const getTripGroup = (segmentIds) => getDriveGroup(segmentIds, tripGroupOptions);
+
 async function startTripMonitor() {
   const state = await getRuntimeState();
   tripTracker = new TripSessionTracker(state.trip_monitor);
   const runTripDatabaseCheck = createTripDatabaseMonitor({
     tracker: tripTracker,
     getSnapshot: getDriveMonitorSnapshot,
-    getTrip: (segmentIds) => getDriveGroup(segmentIds, {
-      pauseMs: tripBoundaryDefaults.inactivityTimeoutMs,
-      endpointMeters: 100
-    }),
+    getTrip: getTripGroup,
     getRuntimeState,
     saveState: saveTripMonitorState,
     sendTrip: async (chatId, event, key) => {
@@ -179,7 +185,7 @@ async function startTripMonitor() {
         const deadline = Date.now() + 20_000;
         for (let attempt = 1; attempt <= 3; attempt += 1) {
           if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 15_000));
-          trip = await getDriveGroup(segmentIds) || trip;
+          trip = await getTripGroup(segmentIds) || trip;
           await applyAddressLabels(trip);
           if (trip?.start_road || trip?.end_road) break;
           if (Date.now() >= deadline) break;
