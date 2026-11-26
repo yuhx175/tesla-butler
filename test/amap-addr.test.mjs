@@ -43,6 +43,30 @@ test.after(async () => {
   await fs.rm(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
 });
 
+test("cold cache: skips missing coordinates without blocking the valid endpoint", async (t) => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => jsonResponse(regeo([road("alpha-road", 12)])));
+  const unavailable = [
+    { lat: null, lng: null },
+    { lat: undefined, lng: 120 },
+    { lat: 30, lng: null },
+    { lat: "  ", lng: 120 },
+    { lat: 30, lng: "" },
+    { lat: false, lng: 120 }
+  ];
+  for (const [index, end] of unavailable.entries()) {
+    // Use distinct valid points. Zero and numeric strings are valid inputs.
+    const trip = tripBetween({ lat: "0", lng: 20 + index }, end);
+    const before = fetch.mock.callCount();
+    await applyAddressLabels(trip);
+    assert.equal(trip.start_road, "alpha-road");
+    assert.equal(trip.end_road, null);
+    assert.equal(trip.end_area, null);
+    assert.equal(fetch.mock.callCount() - before, 1);
+    const request = new URL(fetch.mock.calls[before].arguments[0]);
+    assert.equal(request.searchParams.get("location"), `${(20 + index).toFixed(6)},0.000000`);
+  }
+});
+
 test("fills both missing endpoints", async (t) => {
   let requests = 0;
   t.mock.method(globalThis, "fetch", async () => { requests += 1; return jsonResponse(regeo([road("alpha-road", 12)])); });

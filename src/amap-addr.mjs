@@ -165,10 +165,18 @@ export async function applyAddressLabels(trip, { signal } = {}) {
   return trip;
 }
 
+function parseCoordinate(value) {
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim()) return Number(value);
+  return NaN;
+}
+
 async function resolveEndpoint(trip, endpoint, signal) {
   if (trip[endpoint.roadField]) return;
-  const lat = Number(endpoint.lat);
-  const lng = Number(endpoint.lng);
+  // A drive can close before TeslaMate records an endpoint. Do not turn
+  // null/blank coordinates into zero and attach an unrelated address.
+  const lat = parseCoordinate(endpoint.lat);
+  const lng = parseCoordinate(endpoint.lng);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
   try {
     const label = await resolveLabel(coordKey(lat, lng), { signal });
